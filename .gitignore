@@ -12,3 +12,4 @@ big2/policies/ppo_snapshots_*/
 *.log
 replays.jsonl
 big2/policies/ppo_v3_latest_500k_backup.pt
+big2/policies/wangbot_v3_latest.pt

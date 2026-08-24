@@ -339,6 +339,11 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--start", default=START)
+    parser.add_argument("--resume", action="store_true",
+                        help="continue from the rolling checkpoint and its "
+                             "recorded game count.  This box restarts every "
+                             "few hours; without resume a long run loses "
+                             "everything, with it a restart costs one batch.")
     parser.add_argument("--out", default=OUT)
     parser.add_argument("--eval-games", type=int, default=1000)
     parser.add_argument("--eval-only", action="store_true")
@@ -367,8 +372,18 @@ def main() -> None:
     # the second attention block) rather than today's constants.
     from big2.neural import load_checkpoint_policy
 
-    payload = torch.load(os.path.join(POLICIES, args.start),
-                         map_location="cpu", weights_only=True)
+    start_path = os.path.join(POLICIES, args.start)
+    done = 0
+    if args.resume and os.path.exists(LATEST):
+        start_path = LATEST
+        try:
+            done = int(torch.load(LATEST, map_location="cpu",
+                                  weights_only=True)
+                       .get("meta", {}).get("games", 0))
+        except Exception:
+            done = 0
+        print(f"[distill] resuming from {LATEST} at {done} games", flush=True)
+    payload = torch.load(start_path, map_location="cpu", weights_only=True)
     sd = payload["state_dict"]
     arch = {
         "d_model": payload.get("d_model", 192),
@@ -378,7 +393,7 @@ def main() -> None:
         "layers": payload.get("layers", 2),
         "attn_blocks": 2 if any(k.startswith("attn2.") for k in sd) else 1,
     }
-    net = load_checkpoint_policy(os.path.join(POLICIES, args.start)).net
+    net = load_checkpoint_policy(start_path).net
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
 
     print(f"[distill] learner {args.start} vs {list(HOUSE)} | "
@@ -387,9 +402,9 @@ def main() -> None:
           f"{args.games} games, {workers} workers", flush=True)
 
     ctx = mp.get_context("spawn")
-    rng = random.Random(args.seed)
-    done = 0
+    rng = random.Random(args.seed + done)   # don't replay the same deals
     t0 = time.time()
+    started_at = done
     hist: List[float] = []
     while done < args.games:
         want = min(args.report_every, args.games - done)
@@ -407,7 +422,7 @@ def main() -> None:
         done += played
         stats = update(net, opt, samples, epochs=args.epochs)
         hist.extend(scores)
-        rate = done / max(1e-9, time.time() - t0)
+        rate = (done - started_at) / max(1e-9, time.time() - t0)
         recent = hist[-400:]
         print(
             f"[distill] {done}/{args.games} games | "
